@@ -1,7 +1,6 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using OfficeOpenXml.Drawing;
+﻿using Microsoft.AspNetCore.Mvc;
 using OfficeOpenXml;
+using OfficeOpenXml.Drawing;
 
 namespace ReadFileInExcel.APIs
 {
@@ -23,7 +22,7 @@ namespace ReadFileInExcel.APIs
             {
                 return BadRequest("Invalid image URL.");
             }
-
+            ExtractPdfFromExcel();
             using (var httpClient = new HttpClient())
             {
                 // Fetch the image from the external server
@@ -37,78 +36,89 @@ namespace ReadFileInExcel.APIs
                 var content = await response.Content.ReadAsByteArrayAsync();
                 var contentType = response.Content.Headers.ContentType.ToString();
 
-                FileContentResult fileContent = new FileContentResult(content,contentType);
+
                 // Return the image as a FileResult
-                return Ok(fileContent);
+                return File(content, contentType);
             }
         }
         [HttpPost]
-        public async Task<IActionResult> Post([FromForm] IFormFile excelFile)
+        public IActionResult Post([FromForm] IFormFile file)
         {
-            string path = Path.Combine(_webHostEnvironment.WebRootPath,"assets","images");
-            if (excelFile == null || excelFile.Length == 0)
-            {
-                return BadRequest("Please select an Excel file.");
-            }
+            if (file == null || file.Length == 0)
+                return BadRequest("No file uploaded.");
+
+            var path = Path.Combine(_webHostEnvironment.WebRootPath, "uploads");
             if (!Directory.Exists(path))
             {
                 Directory.CreateDirectory(path);
             }
-            var records = new List<ExcelRecord>();
-
-            using (var stream = new MemoryStream())
+            string filePath = Path.Combine(path, file.FileName);
+            using (var stream = new FileStream(filePath, FileMode.Create))
             {
-                await excelFile.CopyToAsync(stream);
-                ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
-                using (var package = new ExcelPackage(stream))
+                file.CopyTo(stream);
+            }
+
+            // Process the Excel file to extract the embedded PDF
+            //var pdfPath = ExtractPdfFromExcel(path);
+
+            return Ok();
+            
+        }
+        private void ExtractPdfFromExcel()
+        {
+            var path = Path.Combine(_webHostEnvironment.WebRootPath, "uploads");
+            if (!Directory.Exists(path))
+            {
+                Directory.CreateDirectory(path);
+            }
+            var filePath = Path.Combine(_webHostEnvironment.WebRootPath, "uploads", "book1.xlsx");
+
+            ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage(filePath))
+            {
+                var worksheet = package.Workbook.Worksheets[0];
+                var rowCount = worksheet.Dimension.Rows;
+
+                // Map images from the worksheet drawings
+                var drawings = worksheet.Drawings;
+
+                for (int row = 2; row <= rowCount; row++) // Start from row 2 (skip headers)
                 {
-                    var worksheet = package.Workbook.Worksheets[0]; // Read the first worksheet
-                    var rowCount = worksheet.Dimension.Rows;
+                    var record = new ExcelRecord();
 
-                    for (int row = 2; row <= rowCount; row++) // Assuming the first row has headers
+                    // Safely extract cell values
+                    record.STT = worksheet.Cells[row, 1].GetValue<int>();
+                    record.EquipmentType = worksheet.Cells[row, 2].GetValue<string>();
+                    record.Unit = worksheet.Cells[row, 3].GetValue<string>();
+                    record.Name = worksheet.Cells[row, 4].GetValue<string>();
+                    record.Quantity = worksheet.Cells[row, 5].GetValue<string>();
+
+                    record.Note = worksheet.Cells[row, 8].GetValue<string>();
+                    
+                    // Extract image for the current row
+                    foreach (var drawing in drawings)
                     {
-                        var record = new ExcelRecord();
-                        record.STT = int.Parse(worksheet.Cells[row, 1].Text);
-                        record.CardId = worksheet.Cells[row, 2].Text;
-                        record.Fullname = worksheet.Cells[row, 3].Text;
+                        //if (drawing is ExcelPicture picture)
+                        //{
+                        //    // Match the picture with the row based on position
+                        //    if (picture.From.Row + 1 == row) // EPPlus row index starts from 0
+                        //    {
+                        //        string imageName = $"image_{row - 1}.png";
+                        //        string imagePath = Path.Combine(path, imageName);
 
-
-                        foreach (var drawing in worksheet.Drawings)
-                        {
-                            if (drawing is ExcelPicture picture)
-                            {
-                                // Check if the image is positioned near the relevant row
-                                if (picture.From.Row + 1 == row) // Adjust column index if necessary
-                                {
-                                    // Extract the image bytes
-                                    var imageBytes = picture.Image.ImageBytes;
-
-                                    // Create an in-memory IFormFile
-                                    var image = new FormFile(
-                                        new MemoryStream(imageBytes),
-                                        0,
-                                        imageBytes.Length,
-                                        "image",
-                                        picture.Name)
-                                    {
-                                        Headers = new HeaderDictionary(),
-                                        ContentType = "image/jpeg" // Adjust content type based on the image format
-                                    };
-
-                                    // Use the image (e.g., assign to a model property)
-                                    record.File = image;
-
-                                    break; // Stop after finding the relevant image for the row
-                                }
-                            }
-                        }
-
-                        records.Add(record);
+                        //        using (var imageStream = new FileStream(imagePath, FileMode.Create))
+                        //        {
+                        //            imageStream.Write(picture.Image.ImageBytes, 0, picture.Image.ImageBytes.Length);
+                        //        }
+                        //    }
+                        //}
+                       
                     }
                 }
             }
-            return Ok(records);
         }
+        
 
         [HttpPost("uploadImage")]
         public async Task<IActionResult> UploadImage([FromForm] IFormFile image)
@@ -128,7 +138,7 @@ namespace ReadFileInExcel.APIs
             {
                 await image.CopyToAsync(stream);
             }
-        
+
             return Ok(image);
         }
     }
@@ -136,10 +146,11 @@ namespace ReadFileInExcel.APIs
 public class ExcelRecord
 {
     public int STT { get; set; }
-    public string CardId { get; set; }
-    public string Fullname { get; set; }
-    public DateTime BirthDay { get; set; }
-    public string PhoneNumber { get; set; }
-    public IFormFile File { get; set; }
-    public string Note { get; set; }
+    public string EquipmentType { get; set; }
+    public string Unit { get; set; }
+    public string Name { get; set; }
+    public string Quantity { get; set; }
+    public string ImageFile { get; set; }
+    public string File { get; set; }
+    public string Note { get; set; } // Add this property to fix the error
 }
